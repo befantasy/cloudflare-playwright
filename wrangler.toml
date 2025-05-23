@@ -1,4 +1,4 @@
-name = "cloudflare-playwright"
+name = "cloudflare-playwright-weibo"
 main = "src/index.ts"
 workers_dev = true
 compatibility_flags = ["nodejs_compat"]
@@ -7,3 +7,9 @@ upload_source_maps = true
 
 [browser]
 binding = "MYBROWSER"
+
+# KV存储配置用于保存登录信息
+[[kv_namespaces]]
+binding = "WEIBO_KV"
+id = "711dc4835b0c471bae64f698c2e14796"  # 需要替换为实际的KV namespace ID
+preview_id = "711dc4835b0c471bae64f698c2e14796"  # 需要替换为预览环境的KV namespace ID
