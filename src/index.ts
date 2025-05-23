@@ -65,28 +65,78 @@ async function handleGetQRCode(body: any, env: any, corsHeaders: any): Promise<R
   try {
     // 访问微博登录页面
     await page.goto('https://weibo.com/login.php');
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(5000);
 
-    // 点击二维码登录选项
-    const qrLoginTab = page.locator('.info_list .W_fL').or(
-      page.locator('a[href*="qr"]').or(
-        page.locator('[node-type="qrcodeTab"]')
-      )
-    );
-    
-    if (await qrLoginTab.isVisible()) {
-      await qrLoginTab.click();
-      await page.waitForTimeout(2000);
+    // 尝试多种方式点击二维码登录
+    try {
+      // 方法1：查找二维码登录标签
+      const qrTab1 = page.locator('text=二维码登录');
+      if (await qrTab1.isVisible({ timeout: 2000 })) {
+        await qrTab1.click();
+        await page.waitForTimeout(2000);
+      }
+    } catch (e) {
+      try {
+        // 方法2：查找包含"扫码"的元素
+        const qrTab2 = page.locator('text=扫码登录');
+        if (await qrTab2.isVisible({ timeout: 2000 })) {
+          await qrTab2.click();
+          await page.waitForTimeout(2000);
+        }
+      } catch (e2) {
+        // 方法3：通过CSS选择器
+        const qrTab3 = page.locator('.info_list a').filter({ hasText: /二维码|扫码|QR/ });
+        if (await qrTab3.count() > 0) {
+          await qrTab3.first().click();
+          await page.waitForTimeout(2000);
+        }
+      }
     }
 
-    // 等待二维码加载
-    const qrCodeImg = page.locator('.qrcode_box img').or(
-      page.locator('.W_login_qrcode img').or(
-        page.locator('img[alt*="二维码"]')
-      )
-    );
-    
-    await qrCodeImg.waitFor({ timeout: 10000 });
+    // 等待页面加载
+    await page.waitForTimeout(3000);
+
+    // 尝试多种选择器找到二维码图片
+    let qrCodeImg = null;
+    const qrSelectors = [
+      'img[src*="qr"]',
+      'img[alt*="二维码"]',
+      'img[alt*="QR"]',
+      '.qrcode_box img',
+      '.W_login_qrcode img',
+      '.login_qr img',
+      'img[src*="login"]',
+      'canvas', // 有些网站用canvas显示二维码
+      '[class*="qr"] img',
+      '[id*="qr"] img'
+    ];
+
+    for (const selector of qrSelectors) {
+      try {
+        const element = page.locator(selector);
+        if (await element.isVisible({ timeout: 2000 })) {
+          qrCodeImg = element;
+          break;
+        }
+      } catch (e) {
+        continue;
+      }
+    }
+
+    if (!qrCodeImg) {
+      // 如果找不到二维码，截取整个页面让用户看看情况
+      const fullScreenshot = await page.screenshot();
+      const debugImage = `data:image/png;base64,${btoa(String.fromCharCode(...fullScreenshot))}`;
+      
+      await browser.close();
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'QR code element not found. Here is the current page:',
+        debugImage: debugImage
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
     
     // 获取二维码图片源
     const qrSrc = await qrCodeImg.getAttribute('src');
