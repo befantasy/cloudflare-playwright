@@ -43,9 +43,10 @@ export default {
       }
     } catch (error) {
       console.error('Error:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       return new Response(JSON.stringify({ 
         success: false, 
-        error: error.message 
+        error: errorMessage 
       }), {
         status: 500,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
@@ -140,7 +141,8 @@ export default {
 
     } catch (error) {
       await browser.close();
-      throw error;
+      const errorMessage = error instanceof Error ? error.message : 'Login failed';
+      throw new Error(errorMessage);
     }
   },
 
@@ -170,7 +172,8 @@ export default {
     const loginInfo: LoginInfo = JSON.parse(loginInfoStr);
     
     // 检查登录信息是否过期（7天）
-    if (Date.now() - loginInfo.loginTime > 86400 * 7 * 1000) {
+    const loginTime = loginInfo.loginTime || 0;
+    if (Date.now() - loginTime > 86400 * 7 * 1000) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Login expired. Please login again.'
@@ -185,7 +188,19 @@ export default {
 
     try {
       // 设置cookies
-      const cookies = loginInfo.cookies.split('; ').map(cookie => {
+      const cookiesStr = loginInfo.cookies || '';
+      if (!cookiesStr) {
+        await browser.close();
+        return new Response(JSON.stringify({
+          success: false,
+          error: 'No valid cookies found. Please login again.'
+        }), {
+          status: 401,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+
+      const cookies = cookiesStr.split('; ').map(cookie => {
         const [name, value] = cookie.split('=');
         return { name, value, domain: '.weibo.com', path: '/' };
       });
@@ -220,16 +235,19 @@ export default {
       // 如果有图片，上传图片
       if (body.images && body.images.length > 0) {
         for (const base64Image of body.images) {
-          // 将base64转换为buffer
-          const imageBuffer = Buffer.from(base64Image.replace(/^data:image\/\w+;base64,/, ''), 'base64');
+          // 将base64转换为Uint8Array (Worker环境中没有Buffer)
+          const base64Data = base64Image.replace(/^data:image\/\w+;base64,/, '');
+          const binaryString = atob(base64Data);
+          const bytes = new Uint8Array(binaryString.length);
+          for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+          }
           
-          // 创建临时文件
+          // 创建File对象
           const fileName = `temp_image_${Date.now()}.jpg`;
-          await page.setInputFiles('input[type="file"]', {
-            name: fileName,
-            mimeType: 'image/jpeg',
-            buffer: imageBuffer
-          });
+          const file = new File([bytes], fileName, { type: 'image/jpeg' });
+          
+          await page.setInputFiles('input[type="file"]', file);
           await page.waitForTimeout(2000);
         }
       }
@@ -252,7 +270,8 @@ export default {
 
     } catch (error) {
       await browser.close();
-      throw error;
+      const errorMessage = error instanceof Error ? error.message : 'Post failed';
+      throw new Error(errorMessage);
     }
   },
 
