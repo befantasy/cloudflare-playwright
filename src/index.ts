@@ -107,7 +107,7 @@ async function handleGetQRCode(body: any, env: any, corsHeaders: any): Promise<R
           const qrScreenshot = await page.screenshot({
             clip: qrElement
           });
-          qrImageData = `data:image/png;base64,${Buffer.from(qrScreenshot).toString('base64')}`;
+          qrImageData = `data:image/png;base64,${btoa(String.fromCharCode(...qrScreenshot))}`;
         }
       }
     }
@@ -115,7 +115,7 @@ async function handleGetQRCode(body: any, env: any, corsHeaders: any): Promise<R
     // 如果没有获取到二维码图片，截取整个二维码区域
     if (!qrImageData) {
       const qrScreenshot = await qrCodeImg.screenshot();
-      qrImageData = `data:image/png;base64,${Buffer.from(qrScreenshot).toString('base64')}`;
+      qrImageData = `data:image/png;base64,${btoa(String.fromCharCode(...qrScreenshot))}`;
     }
 
     // 保存会话信息到KV
