@@ -1,18 +1,16 @@
 {
-  "name": "cloudflare-playwright-weibo",
+  "name": "cloudflare-playwright",
   "version": "1.0.0",
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "Cloudflare Worker for posting to Weibo using Playwright",
+  "description": "",
   "scripts": {
     "build": "tsc",
-    "deploy": "wrangler deploy",
-    "dev": "wrangler dev"
+    "deploy": "wrangler deploy"
   },
   "devDependencies": {
     "@cloudflare/playwright": "^0.0.9",
-    "@cloudflare/workers-types": "^4.20241106.0",
     "typescript": "^5.8.3",
     "wrangler": "^4.13.0"
   }
