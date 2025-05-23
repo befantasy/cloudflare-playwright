@@ -1,16 +1,34 @@
 {
   "compilerOptions": {
-    "strict": true,
-    "module": "esnext",
-    "target": "esnext",
-    "lib": ["esnext", "DOM"],
-    "moduleResolution": "bundler",
-    "noEmit": true,
-    "skipLibCheck": true,
+    "target": "ES2020",
+    "lib": ["ES2020", "WebWorker"],
+    "module": "ES2020",
+    "moduleResolution": "node",
     "allowSyntheticDefaultImports": true,
-    "allowImportingTsExtensions": true,
-    "resolveJsonModule": true,
-    "types": ["./worker-configuration.d.ts"]
+    "esModuleInterop": true,
+    "allowJs": true,
+    "checkJs": false,
+    "declaration": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": false,
+    "isolatedModules": true,
+    "strict": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": false,
+    "noImplicitOverride": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "outDir": "./dist",
+    "rootDir": "./src"
   },
-  "include": ["./**/*.ts", "./**/*.d.ts"],
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
 }
