@@ -238,7 +238,7 @@ async function getQRCode(env: any, corsHeaders: any): Promise<Response> {
   const page = await browser.newPage();
 
   try {
-    await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1');
+    //await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1');
     
     // 访问微博手机版登录页面
     await page.goto('https://passport.weibo.cn/signin/login', { 
@@ -386,7 +386,7 @@ async function checkLogin(sessionId: string | null, env: any, corsHeaders: any):
   const page = await browser.newPage();
 
   try {
-    await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1');
+    //await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1');
     
     // 方法1: 检查二维码状态API
     if (sessionInfo.qrToken) {
@@ -518,9 +518,9 @@ async function postWeibo(request: any, env: any, corsHeaders: any): Promise<Resp
   const page = await browser.newPage();
 
   try {
-    if (loginInfo.userAgent) {
-      await page.setUserAgent(loginInfo.userAgent);
-    }
+    //if (loginInfo.userAgent) {
+    //  await page.setUserAgent(loginInfo.userAgent);
+    //}
 
     const cookies = loginInfo.cookies.split('; ').map((cookie: string) => {
       const [name, ...valueParts] = cookie.split('=');
