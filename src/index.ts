@@ -100,17 +100,46 @@ function getLoginPage(corsHeaders: any): Response {
                 const response = await fetch('/qr');
                 const result = await response.text();
                 
+                log('服务器响应内容: ' + result.substring(0, 500) + '...');
+                
                 if (response.ok) {
                     document.getElementById('qrCode').innerHTML = result;
                     
-                    // 从返回的HTML中提取sessionId
-                    const match = result.match(/sessionId['"]\s*:\s*['"]([^'"]+)['"]/);
-                    if (match) {
-                        sessionId = match[1];
-                        log('获取到sessionId: ' + sessionId);
+                    // 多种方式提取sessionId
+                    let extractedSessionId = null;
+                    
+                    // 方式1: 从window.sessionId提取
+                    const sessionIdMatch1 = result.match(/window\.sessionId\s*=\s*['"]([^'"]+)['"]/);
+                    if (sessionIdMatch1) {
+                        extractedSessionId = sessionIdMatch1[1];
+                        log('通过window.sessionId提取到: ' + extractedSessionId);
+                    }
+                    
+                    // 方式2: 从input hidden提取
+                    if (!extractedSessionId) {
+                        const sessionIdMatch2 = result.match(/value\s*=\s*['"]([^'"]*qr_[^'"]+)['"]/);
+                        if (sessionIdMatch2) {
+                            extractedSessionId = sessionIdMatch2[1];
+                            log('通过input value提取到: ' + extractedSessionId);
+                        }
+                    }
+                    
+                    // 方式3: 从任何包含qr_的字符串提取
+                    if (!extractedSessionId) {
+                        const sessionIdMatch3 = result.match(/(qr_\d+_[a-zA-Z0-9]+)/);
+                        if (sessionIdMatch3) {
+                            extractedSessionId = sessionIdMatch3[1];
+                            log('通过qr_模式提取到: ' + extractedSessionId);
+                        }
+                    }
+                    
+                    if (extractedSessionId) {
+                        sessionId = extractedSessionId;
+                        log('最终使用sessionId: ' + sessionId);
                         startChecking();
                     } else {
-                        log('未能从响应中提取sessionId');
+                        log('未能从响应中提取sessionId，响应内容可能有问题');
+                        log('完整响应: ' + result);
                     }
                 } else {
                     document.getElementById('status').textContent = '获取二维码失败: ' + result;
@@ -209,7 +238,7 @@ async function getQRCode(env: any, corsHeaders: any): Promise<Response> {
   const page = await browser.newPage();
 
   try {
-    //await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1');
+    await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1');
     
     // 访问微博手机版登录页面
     await page.goto('https://passport.weibo.cn/signin/login', { 
@@ -357,7 +386,7 @@ async function checkLogin(sessionId: string | null, env: any, corsHeaders: any):
   const page = await browser.newPage();
 
   try {
-    //await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1');
+    await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1');
     
     // 方法1: 检查二维码状态API
     if (sessionInfo.qrToken) {
@@ -489,9 +518,9 @@ async function postWeibo(request: any, env: any, corsHeaders: any): Promise<Resp
   const page = await browser.newPage();
 
   try {
-    //if (loginInfo.userAgent) {
-    //  await page.setUserAgent(loginInfo.userAgent);
-    //}
+    if (loginInfo.userAgent) {
+      await page.setUserAgent(loginInfo.userAgent);
+    }
 
     const cookies = loginInfo.cookies.split('; ').map((cookie: string) => {
       const [name, ...valueParts] = cookie.split('=');
