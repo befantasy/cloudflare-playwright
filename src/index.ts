@@ -126,16 +126,23 @@ async function handleGetQRCode(body: any, env: any, corsHeaders: any): Promise<R
     if (!qrCodeImg) {
       // 如果找不到二维码，截取整个页面让用户看看情况
       const fullScreenshot = await page.screenshot();
+      const debugImage = `data:image/png;base64,${btoa(String.fromCharCode(...fullScreenshot))}`;
       
       await browser.close();
-      return new Response(fullScreenshot, {
-        headers: { 
-          ...corsHeaders, 
-          'Content-Type': 'image/png',
-          'X-Debug-Info': 'QR code element not found'
-        }
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'QR code element not found. Here is the current page:',
+        debugImage: debugImage
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
+    
+    // 获取二维码图片源
+    const qrSrc = await qrCodeImg.getAttribute('src');
+    
+    // 生成唯一的会话ID
+    const sessionId = `qr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
     // 获取二维码图片数据
     let qrImageData = null;
@@ -150,8 +157,7 @@ async function handleGetQRCode(body: any, env: any, corsHeaders: any): Promise<R
           const qrScreenshot = await page.screenshot({
             clip: qrElement
           });
-          // 直接返回二进制数据，不转换为base64
-          qrImageData = qrScreenshot;
+          qrImageData = `data:image/png;base64,${btoa(String.fromCharCode(...qrScreenshot))}`;
         }
       }
     }
@@ -159,11 +165,8 @@ async function handleGetQRCode(body: any, env: any, corsHeaders: any): Promise<R
     // 如果没有获取到二维码图片，截取整个二维码区域
     if (!qrImageData) {
       const qrScreenshot = await qrCodeImg.screenshot();
-      qrImageData = qrScreenshot;
+      qrImageData = `data:image/png;base64,${btoa(String.fromCharCode(...qrScreenshot))}`;
     }
-
-    // 生成唯一的会话ID
-    const sessionId = `qr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
     // 保存会话信息到KV
     const sessionInfo = {
@@ -178,29 +181,17 @@ async function handleGetQRCode(body: any, env: any, corsHeaders: any): Promise<R
       });
     }
 
-    await browser.close();
+    // 不关闭浏览器，保持页面活跃用于检查扫码状态
+    // 注意：这里需要一个机制来管理长时间运行的浏览器实例
 
-    // 如果qrImageData是字符串（base64），返回JSON
-    if (typeof qrImageData === 'string') {
-      return new Response(JSON.stringify({
-        success: true,
-        qrCode: qrImageData,
-        sessionId: sessionId,
-        message: 'QR Code generated. Please scan with Weibo app.'
-      }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      });
-    } else {
-      // 如果是二进制数据，直接返回图片
-      return new Response(qrImageData, {
-        headers: {
-          ...corsHeaders,
-          'Content-Type': 'image/png',
-          'X-Session-ID': sessionId,
-          'X-Message': 'QR Code generated. Please scan with Weibo app.'
-        },
-      });
-    }
+    return new Response(JSON.stringify({
+      success: true,
+      qrCode: qrImageData,
+      sessionId: sessionId,
+      message: 'QR Code generated. Please scan with Weibo app.'
+    }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
 
   } catch (error: any) {
     await browser.close();
