@@ -527,10 +527,10 @@ async function postWeibo(request: any, env: any, corsHeaders: any): Promise<Resp
 
         // Convert cookie string back to Playwright's cookie array format
         const cookies = loginInfo.cookies.split('; ').map((cookie: string): { name: string, value: string, domain: string, path: string } => {
-            const [name, ...valueParts] = cookie.split('=');
-            const value = valueParts.join('=');
+            const [cookieName, ...valueParts] = cookie.split('='); // Renamed 'name' to 'cookieName'
+            const cookieValue = valueParts.join('='); // Renamed 'value' to 'cookieValue'
             // Ensure domain and path are correctly set for all cookies
-            return { name, value, domain: '.weibo.com', path: '/' };
+            return { name: cookieName, value: cookieValue, domain: '.weibo.com', path: '/' };
         });
 
         await page.context().addCookies(cookies); // Add cookies to the new page context
