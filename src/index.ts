@@ -37,7 +37,370 @@ export default {
   },
 };
 
-// 返回登录页面
+// 获取二维码 - 改进版本
+async function getQRCode(env: any, corsHeaders: any): Promise<Response> {
+  const browser = await launch(env.MYBROWSER);
+  const page = await browser.newPage();
+
+  try {
+    // 设置桌面版 User Agent
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    
+    // 访问微博登录页面
+    await page.goto('https://weibo.com/login.php', { 
+      waitUntil: 'networkidle',
+      timeout: 30000 
+    });
+    
+    await page.waitForTimeout(3000);
+
+    // 点击二维码登录选项卡
+    try {
+      const qrTab = page.locator('.info_list .login_tab a').filter({ hasText: '扫码登录' });
+      if (await qrTab.isVisible({ timeout: 5000 })) {
+        await qrTab.click();
+        await page.waitForTimeout(2000);
+      }
+    } catch (e) {
+      console.log('未找到扫码登录选项卡，继续寻找二维码');
+    }
+
+    // 查找二维码图片
+    const qrSelectors = [
+      '.qrcode_img img',
+      '.login_qrcode img',
+      '.code_box img',
+      'img[src*="qr.weibo.cn"]',
+      'img[src*="qrcode"]',
+      '.qr_code img'
+    ];
+
+    let qrSrc = null;
+    let qrElement = null;
+    
+    for (const selector of qrSelectors) {
+      try {
+        const elements = await page.locator(selector).all();
+        
+        for (const element of elements) {
+          if (await element.isVisible({ timeout: 2000 })) {
+            const src = await element.getAttribute('src');
+            if (src && (src.includes('qr') || src.includes('login'))) {
+              qrSrc = src;
+              qrElement = element;
+              break;
+            }
+          }
+        }
+        
+        if (qrSrc) break;
+      } catch (e) {
+        continue;
+      }
+    }
+
+    if (!qrSrc) {
+      // 如果没有找到二维码，尝试强制刷新或点击二维码按钮
+      try {
+        const qrButton = page.locator('a[href*="qr"], .qr_btn, [node-type="qrcodeLogin"]');
+        if (await qrButton.isVisible({ timeout: 3000 })) {
+          await qrButton.click();
+          await page.waitForTimeout(3000);
+          
+          // 重新查找二维码
+          for (const selector of qrSelectors) {
+            try {
+              const element = page.locator(selector);
+              if (await element.isVisible({ timeout: 2000 })) {
+                qrSrc = await element.getAttribute('src');
+                if (qrSrc) break;
+              }
+            } catch (e) {
+              continue;
+            }
+          }
+        }
+      } catch (e) {
+        console.log('尝试点击二维码按钮失败');
+      }
+    }
+
+    let sessionId = `qr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    if (qrSrc) {
+      // 确保二维码URL是完整的
+      if (qrSrc.startsWith('//')) {
+        qrSrc = 'https:' + qrSrc;
+      } else if (qrSrc.startsWith('/')) {
+        qrSrc = 'https://weibo.com' + qrSrc;
+      }
+
+      // 提取二维码ID用于后续检查
+      let qrId = null;
+      try {
+        const qrUrl = new URL(qrSrc);
+        qrId = qrUrl.searchParams.get('qrid') || qrUrl.searchParams.get('id') || qrUrl.pathname.split('/').pop();
+      } catch (e) {
+        console.log('提取二维码ID失败:', e);
+      }
+
+      const html = `
+        <div style="text-align: center;">
+          <img src="${qrSrc}" alt="二维码" style="max-width: 300px; border: 1px solid #ddd;">
+          <input type="hidden" id="sessionId" value="${sessionId}">
+          <script>
+            window.sessionId = '${sessionId}';
+            window.qrId = '${qrId || ''}';
+          </script>
+          <p style="margin-top: 10px; font-size: 12px; color: #666;">请使用微博APP扫描二维码</p>
+        </div>
+      `;
+
+      // 保存会话信息
+      if (env.WEIBO_KV) {
+        await env.WEIBO_KV.put(`session:${sessionId}`, JSON.stringify({
+          sessionId,
+          createTime: Date.now(),
+          status: 'waiting',
+          qrSrc: qrSrc,
+          qrId: qrId,
+          pageUrl: page.url(),
+          cookies: await page.context().cookies() // 保存当前cookies用于后续检查
+        }), { expirationTtl: 300 });
+      }
+
+      await browser.close();
+      return new Response(html, {
+        headers: { ...corsHeaders, 'Content-Type': 'text/html; charset=utf-8' }
+      });
+    }
+    
+    // 调试信息
+    const screenshot = await page.screenshot({ fullPage: false });
+    const base64 = btoa(String.fromCharCode(...screenshot));
+    
+    await browser.close();
+    
+    const debugHtml = `
+      <div style="text-align: center;">
+        <h3>调试信息</h3>
+        <p>当前URL: ${page.url()}</p>
+        <p>页面标题: ${await page.title()}</p>
+        <img src="data:image/png;base64,${base64}" alt="页面截图" style="max-width: 100%; border: 1px solid #ccc;">
+        <p style="color: red;">未找到二维码，请检查页面</p>
+      </div>
+    `;
+    
+    return new Response(debugHtml, {
+      headers: { ...corsHeaders, 'Content-Type': 'text/html; charset=utf-8' }
+    });
+
+  } catch (error: any) {
+    await browser.close();
+    return new Response(`获取二维码失败: ${error.message}`, { 
+      status: 500, 
+      headers: corsHeaders 
+    });
+  }
+}
+
+// 检查登录状态 - 完全重写，采用新的检测逻辑
+async function checkLogin(sessionId: string | null, env: any, corsHeaders: any): Promise<Response> {
+  if (!sessionId) {
+    return new Response('缺少会话ID', { status: 400, headers: corsHeaders });
+  }
+
+  // 获取会话信息
+  let sessionInfo = null;
+  if (env.WEIBO_KV) {
+    const sessionInfoStr = await env.WEIBO_KV.get(`session:${sessionId}`);
+    if (sessionInfoStr) {
+      sessionInfo = JSON.parse(sessionInfoStr);
+    }
+  }
+
+  if (!sessionInfo) {
+    return new Response('会话已过期', { status: 400, headers: corsHeaders });
+  }
+
+  // 检查会话是否超时（5分钟）
+  if (Date.now() - sessionInfo.createTime > 300000) {
+    return new Response('二维码已过期', { status: 400, headers: corsHeaders });
+  }
+
+  const browser = await launch(env.MYBROWSER);
+  const page = await browser.newPage();
+
+  try {
+    // 使用相同的 User Agent
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    
+    // 恢复之前的cookies（如果有的话）
+    if (sessionInfo.cookies && sessionInfo.cookies.length > 0) {
+      try {
+        await page.context().addCookies(sessionInfo.cookies);
+      } catch (e) {
+        console.log('恢复cookies失败:', e);
+      }
+    }
+
+    // 方法1: 检查微博主页是否已登录
+    await page.goto('https://weibo.com', { 
+      waitUntil: 'networkidle',
+      timeout: 15000 
+    });
+    await page.waitForTimeout(3000);
+
+    // 检查登录状态的多种方式
+    const loginChecks = [
+      // 检查用户名显示
+      async () => {
+        const selectors = ['.gn_name', '.UserName', '.username', '[node-type="username"]'];
+        for (const selector of selectors) {
+          try {
+            if (await page.locator(selector).isVisible({ timeout: 2000 })) {
+              return true;
+            }
+          } catch (e) {
+            continue;
+          }
+        }
+        return false;
+      },
+      // 检查URL变化
+      async () => {
+        const currentUrl = page.url();
+        return currentUrl.includes('/home') || 
+               (currentUrl.includes('weibo.com') && !currentUrl.includes('login'));
+      },
+      // 检查头像或个人信息
+      async () => {
+        const selectors = ['.head_img', '.avatar', '.UserAvatar', '.gn_header'];
+        for (const selector of selectors) {
+          try {
+            if (await page.locator(selector).isVisible({ timeout: 2000 })) {
+              return true;
+            }
+          } catch (e) {
+            continue;
+          }
+        }
+        return false;
+      },
+      // 检查登录相关的cookie
+      async () => {
+        const cookies = await page.context().cookies();
+        const loginCookies = cookies.filter(c => 
+          c.name.includes('SUB') || 
+          c.name.includes('SUBP') || 
+          c.name.includes('login') ||
+          c.name.includes('uid')
+        );
+        return loginCookies.length > 0;
+      }
+    ];
+
+    let isLoggedIn = false;
+    for (const check of loginChecks) {
+      try {
+        if (await check()) {
+          isLoggedIn = true;
+          break;
+        }
+      } catch (e) {
+        continue;
+      }
+    }
+
+    if (isLoggedIn) {
+      // 登录成功，保存登录信息
+      const cookies = await page.context().cookies();
+      const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+
+      if (env.WEIBO_KV) {
+        await env.WEIBO_KV.put(`login:${sessionId}`, JSON.stringify({
+          sessionId,
+          cookies: cookieString,
+          cookiesArray: cookies,
+          loginTime: Date.now(),
+          userAgent: await page.evaluate(() => navigator.userAgent),
+          loginUrl: page.url()
+        }), { expirationTtl: 86400 * 7 }); // 保存7天
+
+        // 更新会话状态
+        await env.WEIBO_KV.put(`session:${sessionId}`, JSON.stringify({
+          ...sessionInfo,
+          status: 'success',
+          loginTime: Date.now()
+        }), { expirationTtl: 300 });
+      }
+
+      await browser.close();
+      return new Response('登录成功', { headers: corsHeaders });
+    }
+
+    // 方法2: 如果主页检查失败，尝试直接检查登录页面的状态
+    try {
+      await page.goto(sessionInfo.pageUrl || 'https://weibo.com/login.php', { 
+        timeout: 10000 
+      });
+      await page.waitForTimeout(2000);
+
+      // 检查二维码状态
+      const qrStatusSelectors = [
+        '.qr_success',
+        '.qr_confirm', 
+        '.scan_success',
+        '.login_success',
+        '[class*="success"]'
+      ];
+
+      for (const selector of qrStatusSelectors) {
+        try {
+          if (await page.locator(selector).isVisible({ timeout: 1000 })) {
+            // 发现成功状态，等待页面跳转
+            await page.waitForTimeout(3000);
+            
+            // 再次检查是否已跳转到主页
+            if (page.url().includes('weibo.com') && !page.url().includes('login')) {
+              const cookies = await page.context().cookies();
+              const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+
+              if (env.WEIBO_KV) {
+                await env.WEIBO_KV.put(`login:${sessionId}`, JSON.stringify({
+                  sessionId,
+                  cookies: cookieString,
+                  cookiesArray: cookies,
+                  loginTime: Date.now(),
+                  userAgent: await page.evaluate(() => navigator.userAgent)
+                }), { expirationTtl: 86400 * 7 });
+              }
+
+              await browser.close();
+              return new Response('登录成功', { headers: corsHeaders });
+            }
+          }
+        } catch (e) {
+          continue;
+        }
+      }
+    } catch (e) {
+      console.log('检查登录页面状态失败:', e);
+    }
+
+    await browser.close();
+    return new Response('等待扫描...', { headers: corsHeaders });
+
+  } catch (error: any) {
+    await browser.close();
+    return new Response(`检查失败: ${error.message}`, { 
+      status: 500, 
+      headers: corsHeaders 
+    });
+  }
+}
+
+// 返回登录页面 - 保持不变
 function getLoginPage(corsHeaders: any): Response {
   const html = `
 <!DOCTYPE html>
@@ -83,7 +446,7 @@ function getLoginPage(corsHeaders: any): Response {
         let sessionId = null;
         let checkInterval = null;
         let checkCount = 0;
-        const maxChecks = 60; // 最多检查60次 (3分钟)
+        const maxChecks = 100; // 增加检查次数到100次 (5分钟)
 
         function log(message) {
             const debugDiv = document.getElementById('debug');
@@ -105,41 +468,19 @@ function getLoginPage(corsHeaders: any): Response {
                 if (response.ok) {
                     document.getElementById('qrCode').innerHTML = result;
                     
-                    // 多种方式提取sessionId
+                    // 提取sessionId
                     let extractedSessionId = null;
-                    
-                    // 方式1: 从window.sessionId提取
-                    const sessionIdMatch1 = result.match(/window\.sessionId\s*=\s*['"]([^'"]+)['"]/);
-                    if (sessionIdMatch1) {
-                        extractedSessionId = sessionIdMatch1[1];
-                        log('通过window.sessionId提取到: ' + extractedSessionId);
-                    }
-                    
-                    // 方式2: 从input hidden提取
-                    if (!extractedSessionId) {
-                        const sessionIdMatch2 = result.match(/value\s*=\s*['"]([^'"]*qr_[^'"]+)['"]/);
-                        if (sessionIdMatch2) {
-                            extractedSessionId = sessionIdMatch2[1];
-                            log('通过input value提取到: ' + extractedSessionId);
-                        }
-                    }
-                    
-                    // 方式3: 从任何包含qr_的字符串提取
-                    if (!extractedSessionId) {
-                        const sessionIdMatch3 = result.match(/(qr_\d+_[a-zA-Z0-9]+)/);
-                        if (sessionIdMatch3) {
-                            extractedSessionId = sessionIdMatch3[1];
-                            log('通过qr_模式提取到: ' + extractedSessionId);
-                        }
+                    const sessionIdMatch = result.match(/window\.sessionId\s*=\s*['"]([^'"]+)['"]/);
+                    if (sessionIdMatch) {
+                        extractedSessionId = sessionIdMatch[1];
+                        log('提取到sessionId: ' + extractedSessionId);
                     }
                     
                     if (extractedSessionId) {
                         sessionId = extractedSessionId;
-                        log('最终使用sessionId: ' + sessionId);
                         startChecking();
                     } else {
-                        log('未能从响应中提取sessionId，响应内容可能有问题');
-                        log('完整响应: ' + result);
+                        log('未能从响应中提取sessionId');
                     }
                 } else {
                     document.getElementById('status').textContent = '获取二维码失败: ' + result;
@@ -155,7 +496,7 @@ function getLoginPage(corsHeaders: any): Response {
             document.getElementById('status').textContent = '请使用微博APP扫描二维码...';
             log('开始检查登录状态');
             checkCount = 0;
-            checkInterval = setInterval(checkLoginStatus, 3000);
+            checkInterval = setInterval(checkLoginStatus, 3000); // 每3秒检查一次
         }
 
         async function checkLoginStatus() {
@@ -232,268 +573,7 @@ function getLoginPage(corsHeaders: any): Response {
   });
 }
 
-// 获取二维码 - 修复版本
-async function getQRCode(env: any, corsHeaders: any): Promise<Response> {
-  const browser = await launch(env.MYBROWSER);
-  const page = await browser.newPage();
-
-  try {
-    //await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1');
-    
-    // 访问微博手机版登录页面
-    await page.goto('https://passport.weibo.cn/signin/login', { 
-      waitUntil: 'networkidle',
-      timeout: 30000 
-    });
-    
-    await page.waitForTimeout(3000);
-
-    // 查找二维码
-    const qrSelectors = [
-      'div.relative.border-2 img',
-      'div.w-45.h-45 img',
-      'img[src*="qr.weibo.cn"]',
-      'img[src*="qrcode"]',
-      'img[src*="api_key"]',
-      'img[alt=""]'
-    ];
-
-    let qrSrc = null;
-    
-    for (const selector of qrSelectors) {
-      try {
-        const elements = await page.locator(selector).all();
-        
-        for (const element of elements) {
-          if (await element.isVisible({ timeout: 2000 })) {
-            const src = await element.getAttribute('src');
-            if (src && (src.includes('qr') || src.includes('api_key'))) {
-              qrSrc = src;
-              break;
-            }
-          }
-        }
-        
-        if (qrSrc) break;
-      } catch (e) {
-        continue;
-      }
-    }
-
-    let sessionId = `qr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    
-    if (qrSrc) {
-      // 从二维码URL中提取实际的登录参数
-      let qrToken = null;
-      try {
-        const qrUrl = new URL(qrSrc);
-        const dataParam = qrUrl.searchParams.get('data');
-        if (dataParam) {
-          const decodedData = decodeURIComponent(dataParam);
-          const qrMatch = decodedData.match(/qr=([^&]+)/);
-          if (qrMatch) {
-            qrToken = qrMatch[1];
-          }
-        }
-      } catch (e) {
-        console.log('提取二维码token失败:', e);
-      }
-
-      const html = `
-        <div style="text-align: center;">
-          <img src="${qrSrc}" alt="二维码" style="max-width: 300px; border: 1px solid #ddd;">
-          <input type="hidden" id="sessionId" value="${sessionId}">
-          <script>
-            window.sessionId = '${sessionId}';
-            window.qrToken = '${qrToken || ''}';
-          </script>
-          <p style="margin-top: 10px; font-size: 12px; color: #666;">请使用微博APP扫描二维码</p>
-        </div>
-      `;
-
-      // 保存会话信息，包含二维码token
-      if (env.WEIBO_KV) {
-        await env.WEIBO_KV.put(`session:${sessionId}`, JSON.stringify({
-          sessionId,
-          createTime: Date.now(),
-          status: 'waiting',
-          qrSrc: qrSrc,
-          qrToken: qrToken,
-          loginUrl: 'https://passport.weibo.cn/signin/login'
-        }), { expirationTtl: 300 });
-      }
-
-      await browser.close();
-      return new Response(html, {
-        headers: { ...corsHeaders, 'Content-Type': 'text/html; charset=utf-8' }
-      });
-    }
-    
-    // 调试信息
-    const screenshot = await page.screenshot({ fullPage: false });
-    const base64 = btoa(String.fromCharCode(...screenshot));
-    
-    await browser.close();
-    
-    const debugHtml = `
-      <div style="text-align: center;">
-        <h3>调试信息</h3>
-        <p>当前URL: ${page.url()}</p>
-        <p>页面标题: ${await page.title()}</p>
-        <img src="data:image/png;base64,${base64}" alt="页面截图" style="max-width: 100%; border: 1px solid #ccc;">
-        <p style="color: red;">未找到二维码，请检查页面</p>
-      </div>
-    `;
-    
-    return new Response(debugHtml, {
-      headers: { ...corsHeaders, 'Content-Type': 'text/html; charset=utf-8' }
-    });
-
-  } catch (error: any) {
-    await browser.close();
-    return new Response(`获取二维码失败: ${error.message}`, { 
-      status: 500, 
-      headers: corsHeaders 
-    });
-  }
-}
-
-// 检查登录状态 - 完全重写
-async function checkLogin(sessionId: string | null, env: any, corsHeaders: any): Promise<Response> {
-  if (!sessionId) {
-    return new Response('缺少会话ID', { status: 400, headers: corsHeaders });
-  }
-
-  // 获取会话信息
-  let sessionInfo = null;
-  if (env.WEIBO_KV) {
-    const sessionInfoStr = await env.WEIBO_KV.get(`session:${sessionId}`);
-    if (sessionInfoStr) {
-      sessionInfo = JSON.parse(sessionInfoStr);
-    }
-  }
-
-  if (!sessionInfo) {
-    return new Response('会话已过期', { status: 400, headers: corsHeaders });
-  }
-
-  // 检查会话是否超时（5分钟）
-  if (Date.now() - sessionInfo.createTime > 300000) {
-    return new Response('二维码已过期', { status: 400, headers: corsHeaders });
-  }
-
-  const browser = await launch(env.MYBROWSER);
-  const page = await browser.newPage();
-
-  try {
-    //await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1');
-    
-    // 方法1: 检查二维码状态API
-    if (sessionInfo.qrToken) {
-      try {
-        // 构造检查登录状态的URL
-        const checkUrl = `https://passport.weibo.cn/signin/qrcode/check?qr=${sessionInfo.qrToken}`;
-        await page.goto(checkUrl, { timeout: 10000 });
-        
-        const content = await page.content();
-        
-        // 检查响应内容
-        if (content.includes('"retcode":20000000') || content.includes('success')) {
-          // 登录成功，获取登录后的cookies
-          await page.goto('https://weibo.com', { timeout: 15000 });
-          await page.waitForTimeout(2000);
-          
-          const cookies = await page.context().cookies();
-          const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
-
-          // 保存登录信息
-          if (env.WEIBO_KV) {
-            await env.WEIBO_KV.put(`login:${sessionId}`, JSON.stringify({
-              sessionId,
-              cookies: cookieString,
-              loginTime: Date.now(),
-              userAgent: await page.evaluate(() => navigator.userAgent)
-            }), { expirationTtl: 86400 * 7 });
-
-            // 更新会话状态
-            await env.WEIBO_KV.put(`session:${sessionId}`, JSON.stringify({
-              ...sessionInfo,
-              status: 'success',
-              loginTime: Date.now()
-            }), { expirationTtl: 300 });
-          }
-
-          await browser.close();
-          return new Response('登录成功', { headers: corsHeaders });
-        }
-      } catch (e) {
-        console.log('API检查失败，尝试其他方法:', e);
-      }
-    }
-
-    // 方法2: 直接访问微博主页检查登录状态
-    await page.goto('https://weibo.com', { timeout: 15000 });
-    await page.waitForTimeout(3000);
-
-    // 检查是否已登录
-    const loginChecks = [
-      async () => {
-        try {
-          return await page.locator('.gn_name').isVisible({ timeout: 2000 });
-        } catch {
-          return false;
-        }
-      },
-      async () => {
-        return page.url().includes('/home') || (page.url().includes('weibo.com') && !page.url().includes('login'));
-      },
-      async () => {
-        try {
-          return await page.locator('[node-type="username"]').isVisible({ timeout: 2000 });
-        } catch {
-          return false;
-        }
-      }
-    ];
-
-    let isLoggedIn = false;
-    for (const check of loginChecks) {
-      if (await check()) {
-        isLoggedIn = true;
-        break;
-      }
-    }
-
-    if (isLoggedIn) {
-      const cookies = await page.context().cookies();
-      const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
-
-      if (env.WEIBO_KV) {
-        await env.WEIBO_KV.put(`login:${sessionId}`, JSON.stringify({
-          sessionId,
-          cookies: cookieString,
-          loginTime: Date.now(),
-          userAgent: await page.evaluate(() => navigator.userAgent)
-        }), { expirationTtl: 86400 * 7 });
-      }
-
-      await browser.close();
-      return new Response('登录成功', { headers: corsHeaders });
-    }
-
-    await browser.close();
-    return new Response('等待扫描...', { headers: corsHeaders });
-
-  } catch (error: any) {
-    await browser.close();
-    return new Response(`检查失败: ${error.message}`, { 
-      status: 500, 
-      headers: corsHeaders 
-    });
-  }
-}
-
-// 发布微博 - 保持原有逻辑
+// 发布微博 - 改进版本
 async function postWeibo(request: any, env: any, corsHeaders: any): Promise<Response> {
   const body = await request.json();
   
@@ -518,34 +598,55 @@ async function postWeibo(request: any, env: any, corsHeaders: any): Promise<Resp
   const page = await browser.newPage();
 
   try {
-    //if (loginInfo.userAgent) {
-    //  await page.setUserAgent(loginInfo.userAgent);
-    //}
+    if (loginInfo.userAgent) {
+      await page.setUserAgent(loginInfo.userAgent);
+    }
 
-    const cookies = loginInfo.cookies.split('; ').map((cookie: string) => {
-      const [name, ...valueParts] = cookie.split('=');
-      const value = valueParts.join('=');
-      return { name, value, domain: '.weibo.com', path: '/' };
-    });
-    
-    await page.context().addCookies(cookies);
+    // 使用保存的cookies数组（更准确）
+    if (loginInfo.cookiesArray) {
+      await page.context().addCookies(loginInfo.cookiesArray);
+    } else {
+      // 备用方案：解析cookie字符串
+      const cookies = loginInfo.cookies.split('; ').map((cookie: string) => {
+        const [name, ...valueParts] = cookie.split('=');
+        const value = valueParts.join('=');
+        return { name, value, domain: '.weibo.com', path: '/' };
+      });
+      await page.context().addCookies(cookies);
+    }
     
     await page.goto('https://weibo.com', { timeout: 15000 });
     await page.waitForTimeout(3000);
 
-    const isLoggedIn = await page.locator('.gn_name').isVisible().catch(() => false);
+    // 检查登录状态
+    const loginSelectors = ['.gn_name', '.UserName', '[node-type="username"]'];
+    let isLoggedIn = false;
+    
+    for (const selector of loginSelectors) {
+      try {
+        if (await page.locator(selector).isVisible({ timeout: 2000 })) {
+          isLoggedIn = true;
+          break;
+        }
+      } catch (e) {
+        continue;
+      }
+    }
+
     if (!isLoggedIn) {
       await browser.close();
       return new Response('登录已过期，请重新登录', { status: 401, headers: corsHeaders });
     }
 
+    // 查找发布框
     const textAreaSelectors = [
       'textarea[node-type="text"]',
       'textarea[placeholder*="有什么新鲜事"]',
       'textarea[placeholder*="分享新鲜事"]',
       '.WB_editor_iframe textarea',
       '.send_weibo textarea',
-      'textarea[name="text"]'
+      'textarea[name="text"]',
+      '.W_input[node-type="text"]'
     ];
 
     let textArea = null;
@@ -569,12 +670,14 @@ async function postWeibo(request: any, env: any, corsHeaders: any): Promise<Resp
     await textArea.fill(body.content);
     await page.waitForTimeout(1000);
 
+    // 查找发布按钮
     const submitSelectors = [
       'a[node-type="submit"]',
       '.W_btn_a[title*="发布"]',
       'button[title*="发布"]',
       '.send_btn',
-      '.W_btn_a[action-type="submit"]'
+      '.W_btn_a[action-type="submit"]',
+      '.W_btn_a[title="发布"]'
     ];
 
     let submitBtn = null;
@@ -598,17 +701,26 @@ async function postWeibo(request: any, env: any, corsHeaders: any): Promise<Resp
     await submitBtn.click();
     await page.waitForTimeout(3000);
 
+    // 检查发布结果
     const successIndicators = [
-      () => page.locator('.W_tips_success').isVisible().catch(() => false),
-      () => page.locator('.tips[node-type="success"]').isVisible().catch(() => false),
-      () => page.url().includes('/home') || page.url().includes('/u/')
+      () => page.locator('.W_tips_success').isVisible({ timeout: 2000 }).catch(() => false),
+      () => page.locator('.tips[node-type="success"]').isVisible({ timeout: 2000 }).catch(() => false),
+      () => page.locator('.success').isVisible({ timeout: 2000 }).catch(() => false),
+      () => {
+        const currentUrl = page.url();
+        return currentUrl.includes('/home') || currentUrl.includes('/u/');
+      }
     ];
 
     let isSuccess = false;
     for (const check of successIndicators) {
-      if (await check()) {
-        isSuccess = true;
-        break;
+      try {
+        if (await check()) {
+          isSuccess = true;
+          break;
+        }
+      } catch (e) {
+        continue;
       }
     }
 
@@ -617,7 +729,7 @@ async function postWeibo(request: any, env: any, corsHeaders: any): Promise<Resp
     if (isSuccess) {
       return new Response('发布成功', { headers: corsHeaders });
     } else {
-      return new Response('发布可能失败，请检查', { headers: corsHeaders });
+      return new Response('发布可能失败，请检查微博是否已发布', { headers: corsHeaders });
     }
 
   } catch (error: any) {
