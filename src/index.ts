@@ -526,7 +526,7 @@ async function postWeibo(request: any, env: any, corsHeaders: any): Promise<Resp
         }
 
         // Convert cookie string back to Playwright's cookie array format
-        const cookies = loginInfo.cookies.split('; ').map((cookie: string) => {
+        const cookies = loginInfo.cookies.split('; ').map((cookie: string): { name: string, value: string, domain: string, path: string } => {
             const [name, ...valueParts] = cookie.split('=');
             const value = valueParts.join('=');
             // Ensure domain and path are correctly set for all cookies
