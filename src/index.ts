@@ -446,7 +446,7 @@ function getLoginPage(corsHeaders: any): Response {
         let sessionId = null;
         let checkInterval = null;
         let checkCount = 0;
-        const maxChecks = 100; // 增加检查次数到100次 (5分钟)
+        const maxChecks = 10; // 增加检查次数到10次
 
         function log(message) {
             const debugDiv = document.getElementById('debug');
