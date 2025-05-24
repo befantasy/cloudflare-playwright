@@ -166,30 +166,68 @@ async function getQRCode(env: any, corsHeaders: any): Promise<Response> {
   const page = await browser.newPage();
 
   try {
-    // 设置移动端用户代理，因为看起来是移动端页面
-    await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 14_7_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2 Mobile/15E148 Safari/604.1');
+    // 设置更长的超时时间
+    page.setDefaultTimeout(30000);
     
     // 访问微博登录页面
-    await page.goto('https://passport.weibo.cn/signin/login', { waitUntil: 'networkidle' });
+    await page.goto('https://weibo.com/login.php', { waitUntil: 'networkidle' });
     await page.waitForTimeout(5000);
 
-    // 根据HTML结构，二维码直接在左侧显示，寻找二维码图片
+    // 尝试多种方式点击二维码登录标签
+    const qrTabSelectors = [
+      'text=二维码登录',
+      'text=扫码登录',
+      'text=QR登录',
+      '.info_list li:has-text("二维码")',
+      '.info_list li:has-text("扫码")',
+      '.info_list a[href*="qr"]',
+      '.info_list .W_fL',
+      '[node-type="qrcodeTab"]',
+      '.login_tab a:nth-child(2)',
+      'a[data-a-target="qrcode"]'
+    ];
+    
+    let qrTabClicked = false;
+    for (const selector of qrTabSelectors) {
+      try {
+        const element = page.locator(selector);
+        if (await element.isVisible({ timeout: 3000 })) {
+          await element.click();
+          await page.waitForTimeout(3000);
+          qrTabClicked = true;
+          break;
+        }
+      } catch (e) { 
+        console.log(`尝试选择器失败: ${selector}`);
+        continue; 
+      }
+    }
+
+    // 等待页面加载二维码
+    await page.waitForTimeout(5000);
+
+    // 扩展二维码选择器列表
     const qrSelectors = [
-      // 根据提供的HTML，二维码在这个结构中
-      'img[src*="v2.qr.weibo.cn"]',
-      'img[src*="qr.weibo"]',
-      '.w-45.h-45 img', // 宽高45的div中的图片
-      '.p-5 img', // padding为5的div中的图片
-      '.border-2.border-line img', // 有边框的div中的图片
-      'img[src*="api_key"]', // 包含api_key的二维码链接
-      'img[alt=""]', // 空alt属性的图片
-      // 备用选择器
       'img[src*="qr"]',
-      'img[src*="QR"]'
+      'img[src*="QR"]',
+      'img[alt*="二维码"]',
+      'img[alt*="QR"]',
+      'img[alt*="扫码"]',
+      '.qrcode_box img',
+      '.W_login_qrcode img',
+      '.login_qr img',
+      '.qr_code img',
+      '.qrcode img',
+      'img[src*="login"][src*="qr"]',
+      'canvas[id*="qr"]',
+      'canvas[class*="qr"]',
+      '[class*="qrcode"] img',
+      '[id*="qrcode"] img',
+      '[class*="qr-code"] img',
+      'img[src*="weibo.com"][src*="qr"]'
     ];
 
     let qrElement = null;
-    let qrSrc = null;
     let debugInfo = '';
     
     for (const selector of qrSelectors) {
@@ -202,7 +240,6 @@ async function getQRCode(env: any, corsHeaders: any): Promise<Response> {
           const element = elements.first();
           if (await element.isVisible({ timeout: 3000 })) {
             qrElement = element;
-            qrSrc = await element.getAttribute('src');
             break;
           }
         }
@@ -211,126 +248,60 @@ async function getQRCode(env: any, corsHeaders: any): Promise<Response> {
       }
     }
 
-    // 如果找不到二维码元素，直接截取左侧二维码区域
+    // 如果还是找不到，尝试截取整个页面寻找二维码区域
     if (!qrElement) {
-      // 尝试定位二维码容器区域
-      const qrContainer = page.locator('.w-82\\.5').or(
-        page.locator('text=扫描二维码登录').locator('xpath=../..').or(
-          page.locator('.border-2.border-line')
-        )
-      );
+      const fullScreenshot = await page.screenshot();
+      const fullBase64 = btoa(String.fromCharCode(...fullScreenshot));
       
-      if (await qrContainer.isVisible({ timeout: 3000 })) {
-        const containerScreenshot = await qrContainer.screenshot();
-        const containerBase64 = btoa(String.fromCharCode(...containerScreenshot));
-        
-        const sessionId = `qr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        
-        if (env.WEIBO_KV) {
-          await env.WEIBO_KV.put(`session:${sessionId}`, JSON.stringify({
-            sessionId,
-            createTime: Date.now(),
-            status: 'waiting'
-          }), { expirationTtl: 300 });
-        }
-
-        await browser.close();
-
-        const html = `
-          <div style="text-align: center;">
-            <img src="data:image/png;base64,${containerBase64}" alt="二维码区域" style="max-width: 300px; border: 1px solid #ddd;">
-            <input type="hidden" id="sessionId" value="${sessionId}">
-            <script>window.parent.sessionId = '${sessionId}';</script>
-          </div>
-        `;
-
-        return new Response(html, {
-          headers: { ...corsHeaders, 'Content-Type': 'text/html; charset=utf-8' }
-        });
-      }
+      // 生成会话ID
+      const sessionId = `debug_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      
+      await browser.close();
+      
+      const debugHtml = `
+        <div style="text-align: center;">
+          <h3>调试信息 - 当前页面截图</h3>
+          <p>选择器尝试结果: ${debugInfo}</p>
+          <p>二维码标签点击: ${qrTabClicked ? '成功' : '失败'}</p>
+          <p>当前URL: ${page.url()}</p>
+          <img src="data:image/png;base64,${fullBase64}" alt="页面截图" style="max-width: 100%; border: 1px solid #ccc;">
+          <p>请检查页面是否正确显示二维码，如果看到二维码请反馈具体位置</p>
+        </div>
+      `;
+      
+      return new Response(debugHtml, {
+        headers: { ...corsHeaders, 'Content-Type': 'text/html; charset=utf-8' }
+      });
     }
 
-    // 如果找到了二维码元素
-    if (qrElement) {
-      let qrBase64 = '';
-      
-      // 如果有src属性且是完整URL，直接使用
-      if (qrSrc && qrSrc.startsWith('http')) {
-        // 直接返回二维码URL
-        const sessionId = `qr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        
-        if (env.WEIBO_KV) {
-          await env.WEIBO_KV.put(`session:${sessionId}`, JSON.stringify({
-            sessionId,
-            createTime: Date.now(),
-            status: 'waiting',
-            qrUrl: qrSrc
-          }), { expirationTtl: 300 });
-        }
-
-        await browser.close();
-
-        const html = `
-          <div style="text-align: center;">
-            <img src="${qrSrc}" alt="二维码" style="max-width: 300px; border: 1px solid #ddd;">
-            <p style="font-size: 12px; color: #666; margin-top: 10px;">打开微博手机APP - 我的页面 - 扫一扫</p>
-            <input type="hidden" id="sessionId" value="${sessionId}">
-            <script>window.parent.sessionId = '${sessionId}';</script>
-          </div>
-        `;
-
-        return new Response(html, {
-          headers: { ...corsHeaders, 'Content-Type': 'text/html; charset=utf-8' }
-        });
-      } else {
-        // 截取二维码图片
-        const qrScreenshot = await qrElement.screenshot();
-        qrBase64 = btoa(String.fromCharCode(...qrScreenshot));
-        
-        const sessionId = `qr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        
-        if (env.WEIBO_KV) {
-          await env.WEIBO_KV.put(`session:${sessionId}`, JSON.stringify({
-            sessionId,
-            createTime: Date.now(),
-            status: 'waiting'
-          }), { expirationTtl: 300 });
-        }
-
-        await browser.close();
-
-        const html = `
-          <div style="text-align: center;">
-            <img src="data:image/png;base64,${qrBase64}" alt="二维码" style="max-width: 300px; border: 1px solid #ddd;">
-            <p style="font-size: 12px; color: #666; margin-top: 10px;">打开微博手机APP - 我的页面 - 扫一扫</p>
-            <input type="hidden" id="sessionId" value="${sessionId}">
-            <script>window.parent.sessionId = '${sessionId}';</script>
-          </div>
-        `;
-
-        return new Response(html, {
-          headers: { ...corsHeaders, 'Content-Type': 'text/html; charset=utf-8' }
-        });
-      }
-    }
-
-    // 如果所有方法都失败，返回调试信息
-    const fullScreenshot = await page.screenshot();
-    const fullBase64 = btoa(String.fromCharCode(...fullScreenshot));
+    // 截取二维码
+    const qrScreenshot = await qrElement.screenshot();
+    const qrBase64 = btoa(String.fromCharCode(...qrScreenshot));
     
+    // 生成会话ID
+    const sessionId = `qr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    // 保存页面上下文到KV
+    if (env.WEIBO_KV) {
+      await env.WEIBO_KV.put(`session:${sessionId}`, JSON.stringify({
+        sessionId,
+        createTime: Date.now(),
+        status: 'waiting'
+      }), { expirationTtl: 300 });
+    }
+
     await browser.close();
-    
-    const debugHtml = `
+
+    // 返回包含二维码的HTML
+    const html = `
       <div style="text-align: center;">
-        <h3>调试信息 - 当前页面截图</h3>
-        <p>选择器尝试结果: ${debugInfo}</p>
-        <p>当前URL: ${page.url()}</p>
-        <img src="data:image/png;base64,${fullBase64}" alt="页面截图" style="max-width: 100%; border: 1px solid #ccc;">
-        <p>请检查页面是否正确显示二维码</p>
+        <img src="data:image/png;base64,${qrBase64}" alt="二维码" style="max-width: 300px; border: 1px solid #ddd;">
+        <input type="hidden" id="sessionId" value="${sessionId}">
+        <script>window.parent.sessionId = '${sessionId}';</script>
       </div>
     `;
-    
-    return new Response(debugHtml, {
+
+    return new Response(html, {
       headers: { ...corsHeaders, 'Content-Type': 'text/html; charset=utf-8' }
     });
 
