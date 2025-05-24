@@ -44,7 +44,7 @@ async function getQRCode(env: any, corsHeaders: any): Promise<Response> {
 
   try {
     // 设置桌面版 User Agent
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    //await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     
     // 访问微博登录页面
     await page.goto('https://weibo.com/login.php', { 
@@ -233,7 +233,7 @@ async function checkLogin(sessionId: string | null, env: any, corsHeaders: any):
 
   try {
     // 使用相同的 User Agent
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    //await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     
     // 恢复之前的cookies（如果有的话）
     if (sessionInfo.cookies && sessionInfo.cookies.length > 0) {
@@ -598,9 +598,9 @@ async function postWeibo(request: any, env: any, corsHeaders: any): Promise<Resp
   const page = await browser.newPage();
 
   try {
-    if (loginInfo.userAgent) {
-      await page.setUserAgent(loginInfo.userAgent);
-    }
+    //if (loginInfo.userAgent) {
+    //  await page.setUserAgent(loginInfo.userAgent);
+    //}
 
     // 使用保存的cookies数组（更准确）
     if (loginInfo.cookiesArray) {
