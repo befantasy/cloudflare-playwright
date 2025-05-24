@@ -1,476 +1,336 @@
 import { launch } from '@cloudflare/playwright';
-import { expect } from '@cloudflare/playwright/test';
 
 export default {
   async fetch(request: any, env: any): Promise<Response> {
-    // 设置CORS头
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type',
     };
 
-    // 处理预检请求
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: corsHeaders });
     }
 
+    const url = new URL(request.url);
+    const path = url.pathname;
+
     try {
-      if (request.method === 'POST') {
-        return await handlePost(request, env, corsHeaders);
-      } else {
-        return await handleGet(request, env, corsHeaders);
+      switch (path) {
+        case '/':
+          return getLoginPage(corsHeaders);
+        case '/qr':
+          return await getQRCode(env, corsHeaders);
+        case '/check':
+          return await checkLogin(url.searchParams.get('session'), env, corsHeaders);
+        case '/post':
+          return await postWeibo(request, env, corsHeaders);
+        default:
+          return new Response('Not Found', { status: 404, headers: corsHeaders });
       }
     } catch (error: any) {
-      console.error('Error:', error);
-      const errorMessage = error?.message || 'Unknown error';
-      return new Response(JSON.stringify({ 
-        success: false, 
-        error: errorMessage 
-      }), {
-        status: 500,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      return new Response(`Error: ${error.message}`, { 
+        status: 500, 
+        headers: corsHeaders 
       });
     }
   },
 };
 
-async function handlePost(request: any, env: any, corsHeaders: any): Promise<Response> {
-  const body = await request.json();
-  
-  if (body.action === 'getQR') {
-    return await handleGetQRCode(body, env, corsHeaders);
-  } else if (body.action === 'checkQR') {
-    return await handleCheckQRCode(body, env, corsHeaders);
-  } else if (body.action === 'login') {
-    return await handleLogin(body, env, corsHeaders);
-  } else if (body.action === 'post') {
-    return await handlePostWeibo(body, env, corsHeaders);
-  } else {
-    return new Response(JSON.stringify({
-      success: false,
-      error: 'Invalid action. Use "getQR", "checkQR", "login" or "post"'
-    }), {
-      status: 400,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
-  }
+// 返回登录页面
+function getLoginPage(corsHeaders: any): Response {
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>微博登录</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }
+        .container { text-align: center; }
+        .qr-container { margin: 20px 0; padding: 20px; border: 1px solid #ddd; border-radius: 8px; }
+        button { padding: 10px 20px; margin: 10px; background: #1da1f2; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #0d8bd9; }
+        #qrCode { max-width: 300px; margin: 20px auto; }
+        #status { margin: 10px 0; font-weight: bold; }
+        .post-form { margin-top: 30px; padding: 20px; border: 1px solid #ddd; border-radius: 8px; display: none; }
+        textarea { width: 100%; height: 100px; margin: 10px 0; padding: 10px; border: 1px solid #ddd; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>微博自动登录与发布</h1>
+        
+        <div class="qr-container">
+            <h3>扫码登录</h3>
+            <button onclick="getQRCode()">获取二维码</button>
+            <div id="qrCode"></div>
+            <div id="status"></div>
+        </div>
+
+        <div id="postForm" class="post-form">
+            <h3>发布微博</h3>
+            <textarea id="content" placeholder="输入微博内容..."></textarea>
+            <button onclick="postWeibo()">发布微博</button>
+            <div id="postStatus"></div>
+        </div>
+    </div>
+
+    <script>
+        let sessionId = null;
+        let checkInterval = null;
+
+        async function getQRCode() {
+            try {
+                document.getElementById('status').textContent = '正在获取二维码...';
+                const response = await fetch('/qr');
+                const result = await response.text();
+                
+                if (response.ok) {
+                    document.getElementById('qrCode').innerHTML = result;
+                    const match = result.match(/session=([^"&]+)/);
+                    if (match) {
+                        sessionId = match[1];
+                        startChecking();
+                    }
+                } else {
+                    document.getElementById('status').textContent = '获取二维码失败: ' + result;
+                }
+            } catch (error) {
+                document.getElementById('status').textContent = '网络错误: ' + error.message;
+            }
+        }
+
+        function startChecking() {
+            document.getElementById('status').textContent = '请使用微博APP扫描二维码...';
+            checkInterval = setInterval(checkLoginStatus, 3000);
+        }
+
+        async function checkLoginStatus() {
+            if (!sessionId) return;
+            
+            try {
+                const response = await fetch(\`/check?session=\${sessionId}\`);
+                const result = await response.text();
+                
+                if (result.includes('登录成功')) {
+                    clearInterval(checkInterval);
+                    document.getElementById('status').textContent = '登录成功！';
+                    document.getElementById('postForm').style.display = 'block';
+                } else if (result.includes('已过期')) {
+                    clearInterval(checkInterval);
+                    document.getElementById('status').textContent = '二维码已过期，请重新获取';
+                }
+            } catch (error) {
+                console.error('检查登录状态失败:', error);
+            }
+        }
+
+        async function postWeibo() {
+            const content = document.getElementById('content').value.trim();
+            if (!content) {
+                alert('请输入微博内容');
+                return;
+            }
+
+            try {
+                document.getElementById('postStatus').textContent = '正在发布...';
+                const response = await fetch('/post', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content, sessionId })
+                });
+                
+                const result = await response.text();
+                document.getElementById('postStatus').textContent = result;
+                
+                if (response.ok && result.includes('成功')) {
+                    document.getElementById('content').value = '';
+                }
+            } catch (error) {
+                document.getElementById('postStatus').textContent = '发布失败: ' + error.message;
+            }
+        }
+    </script>
+</body>
+</html>`;
+
+  return new Response(html, {
+    headers: { ...corsHeaders, 'Content-Type': 'text/html; charset=utf-8' }
+  });
 }
 
-// 获取二维码
-async function handleGetQRCode(body: any, env: any, corsHeaders: any): Promise<Response> {
+// 获取二维码并直接返回HTML页面显示
+async function getQRCode(env: any, corsHeaders: any): Promise<Response> {
   const browser = await launch(env.MYBROWSER);
   const page = await browser.newPage();
 
   try {
-    // 访问微博登录页面
     await page.goto('https://weibo.com/login.php');
-    await page.waitForTimeout(5000);
-
-    // 尝试多种方式点击二维码登录
-    try {
-      // 方法1：查找二维码登录标签
-      const qrTab1 = page.locator('text=二维码登录');
-      if (await qrTab1.isVisible({ timeout: 2000 })) {
-        await qrTab1.click();
-        await page.waitForTimeout(2000);
-      }
-    } catch (e) {
-      try {
-        // 方法2：查找包含"扫码"的元素
-        const qrTab2 = page.locator('text=扫码登录');
-        if (await qrTab2.isVisible({ timeout: 2000 })) {
-          await qrTab2.click();
-          await page.waitForTimeout(2000);
-        }
-      } catch (e2) {
-        // 方法3：通过CSS选择器
-        const qrTab3 = page.locator('.info_list a').filter({ hasText: /二维码|扫码|QR/ });
-        if (await qrTab3.count() > 0) {
-          await qrTab3.first().click();
-          await page.waitForTimeout(2000);
-        }
-      }
-    }
-
-    // 等待页面加载
     await page.waitForTimeout(3000);
 
-    // 尝试多种选择器找到二维码图片
-    let qrCodeImg = null;
+    // 点击二维码登录
+    const qrTabs = [
+      'text=二维码登录',
+      'text=扫码登录', 
+      '.info_list a[href*="qr"]'
+    ];
+    
+    for (const selector of qrTabs) {
+      try {
+        const element = page.locator(selector);
+        if (await element.isVisible({ timeout: 2000 })) {
+          await element.click();
+          await page.waitForTimeout(2000);
+          break;
+        }
+      } catch (e) { continue; }
+    }
+
+    // 寻找二维码
     const qrSelectors = [
       'img[src*="qr"]',
-      'img[alt*="二维码"]',
-      'img[alt*="QR"]',
+      'img[alt*="二维码"]', 
       '.qrcode_box img',
-      '.W_login_qrcode img',
-      '.login_qr img',
-      'img[src*="login"]',
-      'canvas', // 有些网站用canvas显示二维码
-      '[class*="qr"] img',
-      '[id*="qr"] img'
+      '.W_login_qrcode img'
     ];
 
+    let qrElement = null;
     for (const selector of qrSelectors) {
       try {
         const element = page.locator(selector);
         if (await element.isVisible({ timeout: 2000 })) {
-          qrCodeImg = element;
+          qrElement = element;
           break;
         }
-      } catch (e) {
-        continue;
-      }
+      } catch (e) { continue; }
     }
 
-    if (!qrCodeImg) {
-      // 如果找不到二维码，截取整个页面让用户看看情况
-      const fullScreenshot = await page.screenshot();
-      const debugImage = `data:image/png;base64,${btoa(String.fromCharCode(...fullScreenshot))}`;
-      
+    if (!qrElement) {
       await browser.close();
-      return new Response(JSON.stringify({
-        success: false,
-        error: 'QR code element not found. Here is the current page:',
-        debugImage: debugImage
-      }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      });
+      return new Response('未找到二维码元素', { status: 404, headers: corsHeaders });
     }
+
+    // 截取二维码
+    const qrScreenshot = await qrElement.screenshot();
+    const qrBase64 = btoa(String.fromCharCode(...qrScreenshot));
     
-    // 获取二维码图片源
-    const qrSrc = await qrCodeImg.getAttribute('src');
-    
-    // 生成唯一的会话ID
+    // 生成会话ID
     const sessionId = `qr_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
-    // 获取二维码图片数据
-    let qrImageData = null;
-    if (qrSrc) {
-      if (qrSrc.startsWith('data:')) {
-        // Base64 数据
-        qrImageData = qrSrc;
-      } else {
-        // 相对或绝对URL，需要截图
-        const qrElement = await qrCodeImg.boundingBox();
-        if (qrElement) {
-          const qrScreenshot = await page.screenshot({
-            clip: qrElement
-          });
-          qrImageData = `data:image/png;base64,${btoa(String.fromCharCode(...qrScreenshot))}`;
-        }
-      }
-    }
-
-    // 如果没有获取到二维码图片，截取整个二维码区域
-    if (!qrImageData) {
-      const qrScreenshot = await qrCodeImg.screenshot();
-      qrImageData = `data:image/png;base64,${btoa(String.fromCharCode(...qrScreenshot))}`;
-    }
-
-    // 保存会话信息到KV
-    const sessionInfo = {
-      sessionId,
-      pageContext: true, // 标记页面仍在运行
-      createTime: Date.now()
-    };
-
+    // 保存页面上下文到KV
     if (env.WEIBO_KV) {
-      await env.WEIBO_KV.put(`qr_session:${sessionId}`, JSON.stringify(sessionInfo), {
-        expirationTtl: 300 // 5分钟过期
-      });
+      await env.WEIBO_KV.put(`session:${sessionId}`, JSON.stringify({
+        sessionId,
+        createTime: Date.now(),
+        status: 'waiting'
+      }), { expirationTtl: 300 });
     }
 
-    // 不关闭浏览器，保持页面活跃用于检查扫码状态
-    // 注意：这里需要一个机制来管理长时间运行的浏览器实例
+    await browser.close();
 
-    return new Response(JSON.stringify({
-      success: true,
-      qrCode: qrImageData,
-      sessionId: sessionId,
-      message: 'QR Code generated. Please scan with Weibo app.'
-    }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    // 返回包含二维码的HTML
+    const html = `
+      <img src="data:image/png;base64,${qrBase64}" alt="二维码" style="max-width: 300px;">
+      <input type="hidden" id="sessionId" value="${sessionId}">
+      <script>window.parent.sessionId = '${sessionId}';</script>
+    `;
+
+    return new Response(html, {
+      headers: { ...corsHeaders, 'Content-Type': 'text/html; charset=utf-8' }
     });
 
   } catch (error: any) {
     await browser.close();
-    const errorMessage = error?.message || 'Failed to get QR code';
-    return new Response(JSON.stringify({
-      success: false,
-      error: errorMessage
-    }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    return new Response(`获取二维码失败: ${error.message}`, { 
+      status: 500, 
+      headers: corsHeaders 
     });
   }
 }
 
-// 检查二维码扫描状态
-async function handleCheckQRCode(body: any, env: any, corsHeaders: any): Promise<Response> {
-  if (!body.sessionId) {
-    return new Response(JSON.stringify({
-      success: false,
-      error: 'Session ID required'
-    }), {
-      status: 400,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
-  }
-
-  // 从KV获取会话信息
-  let sessionInfo = null;
-  if (env.WEIBO_KV) {
-    const sessionInfoStr = await env.WEIBO_KV.get(`qr_session:${body.sessionId}`);
-    if (sessionInfoStr) {
-      sessionInfo = JSON.parse(sessionInfoStr);
-    }
-  }
-
-  if (!sessionInfo) {
-    return new Response(JSON.stringify({
-      success: false,
-      error: 'Invalid or expired session'
-    }), {
-      status: 404,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
+// 检查登录状态
+async function checkLogin(sessionId: string | null, env: any, corsHeaders: any): Promise<Response> {
+  if (!sessionId) {
+    return new Response('缺少会话ID', { status: 400, headers: corsHeaders });
   }
 
   const browser = await launch(env.MYBROWSER);
   const page = await browser.newPage();
 
   try {
-    // 重新访问页面检查登录状态
     await page.goto('https://weibo.com/login.php');
     await page.waitForTimeout(2000);
 
-    // 点击二维码登录选项
-    const qrLoginTab = page.locator('.info_list .W_fL').or(
-      page.locator('a[href*="qr"]').or(
-        page.locator('[node-type="qrcodeTab"]')
-      )
-    );
-    
-    if (await qrLoginTab.isVisible()) {
-      await qrLoginTab.click();
+    // 切换到二维码登录
+    try {
+      await page.locator('text=二维码登录').click({ timeout: 2000 });
       await page.waitForTimeout(1000);
-    }
+    } catch (e) {}
 
-    // 检查二维码状态
-    const statusText = page.locator('.qrcode_tips').or(
-      page.locator('.login_code_tip').or(
-        page.locator('.W_login_qrcode .tips')
-      )
-    );
-
-    let status = 'waiting';
-    let message = 'Waiting for scan...';
-
-    if (await statusText.isVisible()) {
-      const text = await statusText.textContent();
-      if (text) {
-        if (text.includes('已扫描') || text.includes('scanned')) {
-          status = 'scanned';
-          message = 'QR code scanned, waiting for confirmation...';
-        } else if (text.includes('已确认') || text.includes('confirmed')) {
-          status = 'confirmed';
-          message = 'Login confirmed, redirecting...';
-        } else if (text.includes('已过期') || text.includes('expired')) {
-          status = 'expired';
-          message = 'QR code expired, please get a new one.';
-        }
-      }
-    }
-
-    // 检查是否已经登录成功
+    // 检查登录状态
     const currentUrl = page.url();
-    const isLoggedIn = currentUrl.includes('/home') || currentUrl.includes('/u/') || 
+    const isLoggedIn = currentUrl.includes('/home') || 
                       await page.locator('.gn_name').isVisible().catch(() => false);
 
-    if (isLoggedIn || status === 'confirmed') {
-      // 登录成功，获取cookies
+    if (isLoggedIn) {
+      // 保存登录状态
       const cookies = await page.context().cookies();
       const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
 
-      // 保存登录信息到KV
-      const loginInfo = {
-        sessionId: body.sessionId,
-        cookies: cookieString,
-        loginTime: Date.now(),
-        loginMethod: 'qrcode'
-      };
-
       if (env.WEIBO_KV) {
-        await env.WEIBO_KV.put(`login:${body.sessionId}`, JSON.stringify(loginInfo), {
-          expirationTtl: 86400 * 7 // 7天过期
-        });
-        // 清理会话信息
-        await env.WEIBO_KV.delete(`qr_session:${body.sessionId}`);
+        await env.WEIBO_KV.put(`login:${sessionId}`, JSON.stringify({
+          sessionId,
+          cookies: cookieString,
+          loginTime: Date.now()
+        }), { expirationTtl: 86400 * 7 });
       }
 
       await browser.close();
+      return new Response('登录成功', { headers: corsHeaders });
+    }
 
-      return new Response(JSON.stringify({
-        success: true,
-        status: 'success',
-        message: 'Login successful',
-        sessionId: body.sessionId
-      }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      });
+    // 检查二维码状态
+    const statusElement = page.locator('.qrcode_tips').or(page.locator('.login_code_tip'));
+    let status = '等待扫描...';
+    
+    if (await statusElement.isVisible()) {
+      const text = await statusElement.textContent();
+      if (text?.includes('已扫描')) status = '已扫描，请确认...';
+      else if (text?.includes('已过期')) status = '二维码已过期';
     }
 
     await browser.close();
-
-    return new Response(JSON.stringify({
-      success: true,
-      status: status,
-      message: message
-    }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
+    return new Response(status, { headers: corsHeaders });
 
   } catch (error: any) {
     await browser.close();
-    const errorMessage = error?.message || 'Failed to check QR status';
-    return new Response(JSON.stringify({
-      success: false,
-      error: errorMessage
-    }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    return new Response(`检查失败: ${error.message}`, { 
+      status: 500, 
+      headers: corsHeaders 
     });
   }
 }
 
-// 保留原有的用户名密码登录功能作为备选
-async function handleLogin(body: any, env: any, corsHeaders: any): Promise<Response> {
-  if (!body.username || !body.password) {
-    return new Response(JSON.stringify({
-      success: false,
-      error: 'Username and password required'
-    }), {
-      status: 400,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
-  }
-
-  const browser = await launch(env.MYBROWSER);
-  const page = await browser.newPage();
-
-  try {
-    // 访问微博登录页面
-    await page.goto('https://weibo.com/login.php');
-    await page.waitForTimeout(3000);
-
-    // 尝试找到登录表单元素
-    const usernameInput = page.locator('input[name="username"]').or(page.locator('#loginname'));
-    const passwordInput = page.locator('input[name="password"]').or(page.locator('#pl_login_form input[type="password"]'));
-    
-    await usernameInput.fill(body.username);
-    await passwordInput.fill(body.password);
-    
-    // 点击登录按钮
-    const submitBtn = page.locator('a[node-type="submitBtn"]').or(page.locator('.W_btn_a'));
-    await submitBtn.click();
-    await page.waitForTimeout(5000);
-
-    // 检查是否登录成功 - 检查URL变化或页面元素
-    const currentUrl = page.url();
-    const isLoggedIn = currentUrl.includes('/home') || currentUrl.includes('/u/') || 
-                      await page.locator('.gn_name').isVisible().catch(() => false);
-
-    if (!isLoggedIn) {
-      await browser.close();
-      return new Response(JSON.stringify({
-        success: false,
-        error: 'Login failed. Please check username/password or try again later.'
-      }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      });
-    }
-
-    // 获取cookies
-    const cookies = await page.context().cookies();
-    const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
-
-    // 保存登录信息到KV
-    const loginInfo = {
-      username: body.username,
-      password: body.password,
-      cookies: cookieString,
-      loginTime: Date.now(),
-      loginMethod: 'password'
-    };
-
-    if (env.WEIBO_KV) {
-      await env.WEIBO_KV.put(`login:${body.username}`, JSON.stringify(loginInfo), {
-        expirationTtl: 86400 * 7 // 7天过期
-      });
-    }
-
-    await browser.close();
-
-    return new Response(JSON.stringify({
-      success: true,
-      message: 'Login successful'
-    }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
-
-  } catch (error: any) {
-    await browser.close();
-    const errorMessage = error?.message || 'Login failed';
-    return new Response(JSON.stringify({
-      success: false,
-      error: errorMessage
-    }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
-  }
-}
-
-async function handlePostWeibo(body: any, env: any, corsHeaders: any): Promise<Response> {
-  if (!body.content) {
-    return new Response(JSON.stringify({
-      success: false,
-      error: 'Content required'
-    }), {
-      status: 400,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
-  }
-
-  // 从KV获取登录信息 - 支持sessionId或username
-  let loginInfo = null;
-  let loginKey = body.sessionId ? `login:${body.sessionId}` : `login:${body.username}`;
+// 发布微博
+async function postWeibo(request: any, env: any, corsHeaders: any): Promise<Response> {
+  const body = await request.json();
   
+  if (!body.content || !body.sessionId) {
+    return new Response('缺少内容或会话ID', { status: 400, headers: corsHeaders });
+  }
+
+  // 获取登录信息
+  let loginInfo = null;
   if (env.WEIBO_KV) {
-    const loginInfoStr = await env.WEIBO_KV.get(loginKey);
+    const loginInfoStr = await env.WEIBO_KV.get(`login:${body.sessionId}`);
     if (loginInfoStr) {
       loginInfo = JSON.parse(loginInfoStr);
     }
   }
 
   if (!loginInfo) {
-    return new Response(JSON.stringify({
-      success: false,
-      error: 'Not logged in. Please login first.'
-    }), {
-      status: 401,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
-  }
-
-  // 检查登录信息是否过期（7天）
-  const loginTime = loginInfo.loginTime || 0;
-  if (Date.now() - loginTime > 86400 * 7 * 1000) {
-    return new Response(JSON.stringify({
-      success: false,
-      error: 'Login expired. Please login again.'
-    }), {
-      status: 401,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
+    return new Response('未登录，请先登录', { status: 401, headers: corsHeaders });
   }
 
   const browser = await launch(env.MYBROWSER);
@@ -478,107 +338,45 @@ async function handlePostWeibo(body: any, env: any, corsHeaders: any): Promise<R
 
   try {
     // 设置cookies
-    const cookiesStr = loginInfo.cookies || '';
-    if (cookiesStr) {
-      const cookies = cookiesStr.split('; ').map((cookie: string) => {
-        const [name, value] = cookie.split('=');
-        return { name, value, domain: '.weibo.com', path: '/' };
-      });
-      
-      await page.context().addCookies(cookies);
-    }
-
-    // 访问微博首页
+    const cookies = loginInfo.cookies.split('; ').map((cookie: string) => {
+      const [name, value] = cookie.split('=');
+      return { name, value, domain: '.weibo.com', path: '/' };
+    });
+    
+    await page.context().addCookies(cookies);
     await page.goto('https://weibo.com');
     await page.waitForTimeout(3000);
 
-    // 检查是否仍然登录
-    const isLoggedIn = await page.locator('.gn_name').isVisible().catch(() => false) ||
-                      await page.locator('.Nav_username').isVisible().catch(() => false);
-    
+    // 检查登录状态
+    const isLoggedIn = await page.locator('.gn_name').isVisible().catch(() => false);
     if (!isLoggedIn) {
       await browser.close();
-      return new Response(JSON.stringify({
-        success: false,
-        error: 'Session expired. Please login again.'
-      }), {
-        status: 401,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      });
+      return new Response('登录已过期', { status: 401, headers: corsHeaders });
     }
 
-    // 寻找发微博的文本框
+    // 填写并发布微博
     const textArea = page.locator('textarea[node-type="text"]').or(
-      page.locator('.W_input').or(
-        page.locator('textarea[placeholder*="有什么新鲜事"]')
-      )
+      page.locator('textarea[placeholder*="有什么新鲜事"]')
     );
-
+    
     await textArea.fill(body.content);
     await page.waitForTimeout(1000);
 
-    // 寻找发布按钮
     const submitBtn = page.locator('a[node-type="submit"]').or(
-      page.locator('.W_btn_a[title*="发布"]').or(
-        page.locator('button[title*="发布"]')
-      )
+      page.locator('.W_btn_a[title*="发布"]')
     );
-
+    
     await submitBtn.click();
     await page.waitForTimeout(3000);
 
     await browser.close();
-
-    return new Response(JSON.stringify({
-      success: true,
-      message: 'Weibo posted successfully'
-    }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
+    return new Response('发布成功', { headers: corsHeaders });
 
   } catch (error: any) {
     await browser.close();
-    const errorMessage = error?.message || 'Post failed';
-    return new Response(JSON.stringify({
-      success: false,
-      error: errorMessage
-    }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    return new Response(`发布失败: ${error.message}`, { 
+      status: 500, 
+      headers: corsHeaders 
     });
   }
-}
-
-async function handleGet(request: any, env: any, corsHeaders: any): Promise<Response> {
-  // 保留原来的截图功能
-  const { searchParams } = new URL(request.url);
-  const todos = searchParams.getAll('todo');
-
-  const browser = await launch(env.MYBROWSER);
-  const page = await browser.newPage();
-
-  await page.goto('https://demo.playwright.dev/todomvc');
-
-  const TODO_ITEMS = todos.length > 0 ? todos : [
-    'buy some cheese',
-    'feed the cat',
-    'book a doctors appointment'
-  ];
-
-  const newTodo = page.getByPlaceholder('What needs to be done?');
-  for (const item of TODO_ITEMS) {
-    await newTodo.fill(item);
-    await newTodo.press('Enter');
-  }
-
-  await expect(page.getByTestId('todo-title')).toHaveCount(TODO_ITEMS.length);
-
-  const img = await page.screenshot();
-  await browser.close();
-
-  return new Response(img, {
-    headers: {
-      ...corsHeaders,
-      'Content-Type': 'image/png',
-    },
-  });
 }
