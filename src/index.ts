@@ -166,49 +166,112 @@ async function getQRCode(env: any, corsHeaders: any): Promise<Response> {
   const page = await browser.newPage();
 
   try {
-    await page.goto('https://weibo.com/login.php');
-    await page.waitForTimeout(3000);
+    // 设置更长的超时时间
+    page.setDefaultTimeout(30000);
+    
+    // 访问微博登录页面
+    await page.goto('https://weibo.com/login.php', { waitUntil: 'networkidle' });
+    await page.waitForTimeout(5000);
 
-    // 点击二维码登录
-    const qrTabs = [
+    // 尝试多种方式点击二维码登录标签
+    const qrTabSelectors = [
       'text=二维码登录',
-      'text=扫码登录', 
-      '.info_list a[href*="qr"]'
+      'text=扫码登录',
+      'text=QR登录',
+      '.info_list li:has-text("二维码")',
+      '.info_list li:has-text("扫码")',
+      '.info_list a[href*="qr"]',
+      '.info_list .W_fL',
+      '[node-type="qrcodeTab"]',
+      '.login_tab a:nth-child(2)',
+      'a[data-a-target="qrcode"]'
     ];
     
-    for (const selector of qrTabs) {
+    let qrTabClicked = false;
+    for (const selector of qrTabSelectors) {
       try {
         const element = page.locator(selector);
-        if (await element.isVisible({ timeout: 2000 })) {
+        if (await element.isVisible({ timeout: 3000 })) {
           await element.click();
-          await page.waitForTimeout(2000);
+          await page.waitForTimeout(3000);
+          qrTabClicked = true;
           break;
         }
-      } catch (e) { continue; }
+      } catch (e) { 
+        console.log(`尝试选择器失败: ${selector}`);
+        continue; 
+      }
     }
 
-    // 寻找二维码
+    // 等待页面加载二维码
+    await page.waitForTimeout(5000);
+
+    // 扩展二维码选择器列表
     const qrSelectors = [
       'img[src*="qr"]',
-      'img[alt*="二维码"]', 
+      'img[src*="QR"]',
+      'img[alt*="二维码"]',
+      'img[alt*="QR"]',
+      'img[alt*="扫码"]',
       '.qrcode_box img',
-      '.W_login_qrcode img'
+      '.W_login_qrcode img',
+      '.login_qr img',
+      '.qr_code img',
+      '.qrcode img',
+      'img[src*="login"][src*="qr"]',
+      'canvas[id*="qr"]',
+      'canvas[class*="qr"]',
+      '[class*="qrcode"] img',
+      '[id*="qrcode"] img',
+      '[class*="qr-code"] img',
+      'img[src*="weibo.com"][src*="qr"]'
     ];
 
     let qrElement = null;
+    let debugInfo = '';
+    
     for (const selector of qrSelectors) {
       try {
-        const element = page.locator(selector);
-        if (await element.isVisible({ timeout: 2000 })) {
-          qrElement = element;
-          break;
+        const elements = page.locator(selector);
+        const count = await elements.count();
+        debugInfo += `${selector}: ${count}个元素; `;
+        
+        if (count > 0) {
+          const element = elements.first();
+          if (await element.isVisible({ timeout: 3000 })) {
+            qrElement = element;
+            break;
+          }
         }
-      } catch (e) { continue; }
+      } catch (e) { 
+        continue; 
+      }
     }
 
+    // 如果还是找不到，尝试截取整个页面寻找二维码区域
     if (!qrElement) {
+      const fullScreenshot = await page.screenshot();
+      const fullBase64 = btoa(String.fromCharCode(...fullScreenshot));
+      
+      // 生成会话ID
+      const sessionId = `debug_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      
       await browser.close();
-      return new Response('未找到二维码元素', { status: 404, headers: corsHeaders });
+      
+      const debugHtml = `
+        <div style="text-align: center;">
+          <h3>调试信息 - 当前页面截图</h3>
+          <p>选择器尝试结果: ${debugInfo}</p>
+          <p>二维码标签点击: ${qrTabClicked ? '成功' : '失败'}</p>
+          <p>当前URL: ${page.url()}</p>
+          <img src="data:image/png;base64,${fullBase64}" alt="页面截图" style="max-width: 100%; border: 1px solid #ccc;">
+          <p>请检查页面是否正确显示二维码，如果看到二维码请反馈具体位置</p>
+        </div>
+      `;
+      
+      return new Response(debugHtml, {
+        headers: { ...corsHeaders, 'Content-Type': 'text/html; charset=utf-8' }
+      });
     }
 
     // 截取二维码
@@ -231,9 +294,11 @@ async function getQRCode(env: any, corsHeaders: any): Promise<Response> {
 
     // 返回包含二维码的HTML
     const html = `
-      <img src="data:image/png;base64,${qrBase64}" alt="二维码" style="max-width: 300px;">
-      <input type="hidden" id="sessionId" value="${sessionId}">
-      <script>window.parent.sessionId = '${sessionId}';</script>
+      <div style="text-align: center;">
+        <img src="data:image/png;base64,${qrBase64}" alt="二维码" style="max-width: 300px; border: 1px solid #ddd;">
+        <input type="hidden" id="sessionId" value="${sessionId}">
+        <script>window.parent.sessionId = '${sessionId}';</script>
+      </div>
     `;
 
     return new Response(html, {
