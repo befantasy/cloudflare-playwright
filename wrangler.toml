@@ -1,4 +1,4 @@
-name = "cloudflare-playwright-weibo"
+name = "cloudflare-playwright"
 main = "src/index.ts"
 workers_dev = true
 compatibility_flags = ["nodejs_compat"]
